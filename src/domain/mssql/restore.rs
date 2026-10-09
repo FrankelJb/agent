@@ -1,3 +1,4 @@
+use super::format::MssqlFormat;
 use crate::services::backup::logger::JobLogger;
 use crate::services::config::DatabaseConfig;
 use anyhow::{Context, Result};
@@ -6,10 +7,29 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 
-pub async fn run(cfg: DatabaseConfig, restore_file: PathBuf, logger: Arc<JobLogger>) -> Result<()> {
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        logger.log("debug", format!("Starting MSSQL restore for database {}", cfg.name));
+const DROP_DATABASE_SQL: &str = "DECLARE @q nvarchar(258) = QUOTENAME(@P1);
+IF DB_ID(@P1) IS NOT NULL
+BEGIN
+    IF CAST(SERVERPROPERTY('EngineEdition') AS int) <> 5
+        EXEC(N'ALTER DATABASE ' + @q + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE');
+    EXEC(N'DROP DATABASE ' + @q);
+END";
 
+pub async fn run(cfg: DatabaseConfig, restore_file: PathBuf, logger: Arc<JobLogger>) -> Result<()> {
+    logger.log("debug", format!("Starting MSSQL restore for database {}", cfg.name));
+
+    let Some(format) = MssqlFormat::from_path(&restore_file) else {
+        let message = format!(
+            "Unsupported MSSQL backup file {}: expected .bacpac or .dacpac",
+            restore_file.display()
+        );
+        logger.log("error", message.clone());
+        anyhow::bail!(message);
+    };
+
+    drop_database(&cfg, &logger).await?;
+
+    tokio::task::spawn_blocking(move || -> Result<()> {
         let connection_string = format!(
             "Server=tcp:{},{};Database={};User Id={};Password={};TrustServerCertificate=True;Encrypt=False",
             cfg.host, cfg.port, cfg.database, cfg.username, cfg.password
@@ -24,8 +44,12 @@ pub async fn run(cfg: DatabaseConfig, restore_file: PathBuf, logger: Arc<JobLogg
         ));
 
         let start = Instant::now();
-        let output = Command::new("sqlpackage")
-            .arg("/a:Import")
+        let mut command = Command::new("sqlpackage");
+        match format {
+            MssqlFormat::Dacpac => command.args(["/a:Publish", "/p:AllowIncompatiblePlatform=True"]),
+            MssqlFormat::Bacpac => command.arg("/a:Import"),
+        };
+        let output = command
             .arg(format!("/tcs:{}", connection_string))
             .arg(format!("/sf:{}", restore_file.display()))
             .output()
@@ -51,4 +75,21 @@ pub async fn run(cfg: DatabaseConfig, restore_file: PathBuf, logger: Arc<JobLogg
         Ok(())
     })
     .await?
+}
+
+async fn drop_database(cfg: &DatabaseConfig, logger: &JobLogger) -> Result<()> {
+    logger.log("info", format!("Dropping MSSQL database {} before restore", cfg.database));
+
+    let start = Instant::now();
+    let mut client = super::connection::build_client(cfg, Some("master"))
+        .await
+        .with_context(|| format!("Failed to connect to master for {}", cfg.name))?;
+    client
+        .execute(DROP_DATABASE_SQL, &[&cfg.database.as_str()])
+        .await
+        .with_context(|| format!("Failed to drop MSSQL database {}", cfg.database))?;
+
+    let duration_ms = start.elapsed().as_millis() as f64;
+    logger.log_command(format!("DROP DATABASE [{}]", cfg.database), None, Some(0), Some(duration_ms));
+    Ok(())
 }

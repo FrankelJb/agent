@@ -4,10 +4,13 @@ use tiberius::{AuthMethod, Client, Config};
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-pub async fn build_client(cfg: &DatabaseConfig) -> Result<Client<Compat<TcpStream>>> {
+pub async fn build_client(cfg: &DatabaseConfig, database: Option<&str>) -> Result<Client<Compat<TcpStream>>> {
     let mut config = Config::new();
     config.host(&cfg.host);
     config.port(cfg.port);
+    if let Some(database) = database {
+        config.database(database);
+    }
     config.authentication(AuthMethod::sql_server(&cfg.username, &cfg.password));
     config.trust_cert();
 

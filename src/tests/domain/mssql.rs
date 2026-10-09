@@ -245,6 +245,93 @@ async fn mssql_backup_windows_principal_test() {
     assert_eq!(file_path.extension().and_then(|e| e.to_str()), Some("dacpac"));
 }
 
+async fn restore_over_existing(format: &str, generated_id: &str) {
+    init_tracing_for_test();
+    let (_container, host, port) = start().await;
+    create_user_database(&host, port, "appdb").await;
+    exec(&host, port, "master", "CREATE LOGIN app_login WITH PASSWORD = 'App!Str0ng1'").await;
+    exec(
+        &host,
+        port,
+        "appdb",
+        "CREATE TABLE dbo.users (id INT PRIMARY KEY, email NVARCHAR(100) NOT NULL); \
+         INSERT dbo.users VALUES (1, 'a@x'), (2, 'b@x'), (3, 'c@x'); \
+         CREATE USER app_user FOR LOGIN app_login; \
+         GRANT SELECT ON dbo.users TO app_user;",
+    )
+    .await;
+
+    let config = with_backup_format(make_config(host.clone(), port, "appdb", generated_id), format);
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = DatabaseFactory::create_for_backup(config.clone())
+        .await
+        .backup(temp_dir.path(), Arc::new(JobLogger::new()))
+        .await
+        .unwrap();
+    assert_eq!(file_path.extension().and_then(|e| e.to_str()), Some(format));
+
+    exec(
+        &host,
+        port,
+        "appdb",
+        "DELETE FROM dbo.users WHERE id = 1; INSERT dbo.users VALUES (4, 'd@x'); CREATE TABLE dbo.extra (id INT);",
+    )
+    .await;
+
+    DatabaseFactory::create_for_restore(config, &file_path)
+        .await
+        .restore(&file_path, Arc::new(JobLogger::new()))
+        .await
+        .unwrap();
+
+    assert_eq!(scalar(&host, port, "appdb", "sa", SA_PASSWORD, "SELECT COUNT(*) FROM dbo.users").await, 3);
+    assert_eq!(
+        scalar(&host, port, "appdb", "sa", SA_PASSWORD, "SELECT COUNT(*) FROM dbo.users WHERE id IN (1, 2, 3)").await,
+        3
+    );
+    assert_eq!(
+        scalar(&host, port, "appdb", "sa", SA_PASSWORD, "SELECT CASE WHEN OBJECT_ID('dbo.extra') IS NULL THEN 1 ELSE 0 END").await,
+        1
+    );
+    assert_eq!(
+        scalar(&host, port, "appdb", "app_login", "App!Str0ng1", "SELECT COUNT(*) FROM dbo.users").await,
+        3
+    );
+}
+
+#[tokio::test]
+async fn mssql_restore_over_existing_dacpac_test() {
+    restore_over_existing("dacpac", "5a445eb4-c2c6-4bde-a423-ee1385dcf6d8").await;
+}
+
+#[tokio::test]
+async fn mssql_restore_over_existing_bacpac_test() {
+    restore_over_existing("bacpac", "5a445eb4-c2c6-4bde-a423-ee1385dcf6d9").await;
+}
+
+#[tokio::test]
+async fn mssql_restore_rejects_unknown_extension_test() {
+    init_tracing_for_test();
+    let (_container, host, port) = start().await;
+    create_user_database(&host, port, "keepdb").await;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("backup.dump");
+    std::fs::write(&file_path, b"not a package").unwrap();
+
+    let config = make_config(host.clone(), port, "keepdb", "5a445eb4-c2c6-4bde-a423-ee1385dcf6da");
+    let result = DatabaseFactory::create_for_restore(config, &file_path)
+        .await
+        .restore(&file_path, Arc::new(JobLogger::new()))
+        .await;
+
+    assert!(result.unwrap_err().to_string().contains("expected .bacpac or .dacpac"));
+    assert_eq!(
+        scalar(&host, port, "master", "sa", SA_PASSWORD, "SELECT CASE WHEN DB_ID('keepdb') IS NULL THEN 0 ELSE 1 END").await,
+        1
+    );
+}
+
 mod format_tests {
     use super::{make_config, with_backup_format};
     use crate::domain::mssql::format::MssqlFormat;
