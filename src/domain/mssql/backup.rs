@@ -14,12 +14,12 @@ pub async fn run(
     logger: Arc<JobLogger>,
 ) -> Result<PathBuf> {
     tokio::task::spawn_blocking(move || -> Result<PathBuf> {
-        logger.log("info", format!("Starting MSSQL backup for database {}", cfg.name));
-
         let (format, unknown_format) = MssqlFormat::from_config(&cfg);
         if let Some(v) = unknown_format {
             logger.log("warn", format!("Unknown backup_format '{}' for {}, falling back to 'dacpac'", v, cfg.name));
         }
+
+        logger.log("info", format!("Starting MSSQL {} backup for database {}", &format.extension()[1..], cfg.name));
 
         let file_path = backup_dir.join(format!("{}{}", cfg.generated_id, file_extension));
         let connection_string = format!(

@@ -10,11 +10,24 @@ use std::time::Instant;
 const DROP_DATABASE_SQL: &str = "DECLARE @q nvarchar(258) = QUOTENAME(@P1);
 IF DB_ID(@P1) IS NOT NULL
 BEGIN
-    IF HAS_PERMS_BY_NAME(NULL, 'DATABASE', 'CREATE DATABASE') = 0
+    IF DB_ID(@P1) <= 4
+        THROW 50000, N'Refusing to restore over a system database; nothing was dropped', 1;
+    IF ISNULL(HAS_PERMS_BY_NAME(NULL, 'DATABASE', 'CREATE DATABASE'), 0) = 0
         THROW 50000, N'Restore needs CREATE DATABASE permission (dbcreator) to recreate the target database; nothing was dropped', 1;
+    DECLARE @single bit = 0;
     IF CAST(SERVERPROPERTY('EngineEdition') AS int) <> 5
+    BEGIN
         EXEC(N'ALTER DATABASE ' + @q + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE');
-    EXEC(N'DROP DATABASE ' + @q);
+        SET @single = 1;
+    END
+    BEGIN TRY
+        EXEC(N'DROP DATABASE ' + @q);
+    END TRY
+    BEGIN CATCH
+        IF @single = 1 AND DB_ID(@P1) IS NOT NULL
+            EXEC(N'ALTER DATABASE ' + @q + N' SET MULTI_USER');
+        THROW;
+    END CATCH
 END";
 
 pub async fn run(cfg: DatabaseConfig, restore_file: PathBuf, logger: Arc<JobLogger>) -> Result<()> {
@@ -80,7 +93,7 @@ pub async fn run(cfg: DatabaseConfig, restore_file: PathBuf, logger: Arc<JobLogg
 }
 
 async fn drop_database(cfg: &DatabaseConfig, logger: &JobLogger) -> Result<()> {
-    logger.log("info", format!("Dropping MSSQL database {} before restore", cfg.database));
+    logger.log("info", format!("Replacing MSSQL database {} (drop if it exists, then recreate from the backup)", cfg.database));
 
     let start = Instant::now();
     let mut client = super::connection::build_client(cfg, Some("master"))
@@ -92,6 +105,6 @@ async fn drop_database(cfg: &DatabaseConfig, logger: &JobLogger) -> Result<()> {
         .with_context(|| format!("Failed to drop MSSQL database {}", cfg.database))?;
 
     let duration_ms = start.elapsed().as_millis() as f64;
-    logger.log_command(format!("DROP DATABASE [{}]", cfg.database), None, Some(0), Some(duration_ms));
+    logger.log_command(format!("DROP DATABASE IF EXISTS [{}]", cfg.database), None, Some(0), Some(duration_ms));
     Ok(())
 }

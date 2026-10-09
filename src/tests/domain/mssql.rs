@@ -373,6 +373,92 @@ async fn mssql_restore_refuses_without_create_database_test() {
     assert_eq!(scalar(&host, port, "ownerdb", "sa", SA_PASSWORD, "SELECT COUNT(*) FROM dbo.users").await, 3);
 }
 
+#[tokio::test]
+async fn mssql_restore_failed_drop_keeps_multi_user_test() {
+    init_tracing_for_test();
+    let (_container, host, port) = start().await;
+    create_user_database(&host, port, "alterdb").await;
+    exec(
+        &host,
+        port,
+        "master",
+        "CREATE LOGIN alter_login WITH PASSWORD = 'Alter!Str0ng1'; GRANT CREATE ANY DATABASE TO alter_login;",
+    )
+    .await;
+    exec(
+        &host,
+        port,
+        "alterdb",
+        "CREATE TABLE dbo.t (id INT PRIMARY KEY); INSERT dbo.t VALUES (1); \
+         CREATE USER alter_user FOR LOGIN alter_login; GRANT ALTER TO alter_user;",
+    )
+    .await;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("backup.dacpac");
+    std::fs::write(&file_path, b"not a package").unwrap();
+
+    let mut config = make_config(host.clone(), port, "alterdb", "5a445eb4-c2c6-4bde-a423-ee1385dcf6dc");
+    config.username = "alter_login".to_string();
+    config.password = "Alter!Str0ng1".to_string();
+    let result = DatabaseFactory::create_for_restore(config, &file_path)
+        .await
+        .restore(&file_path, Arc::new(JobLogger::new()))
+        .await;
+
+    assert!(!format!("{:#}", result.unwrap_err()).contains("nothing was dropped"));
+    assert_eq!(
+        scalar(&host, port, "master", "sa", SA_PASSWORD, "SELECT CASE WHEN DB_ID('alterdb') IS NULL THEN 0 ELSE 1 END").await,
+        1
+    );
+    assert_eq!(
+        scalar(
+            &host,
+            port,
+            "master",
+            "sa",
+            SA_PASSWORD,
+            "SELECT CASE WHEN DATABASEPROPERTYEX('alterdb', 'UserAccess') = 'MULTI_USER' THEN 1 ELSE 0 END"
+        )
+        .await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn mssql_restore_refuses_system_database_test() {
+    init_tracing_for_test();
+    let (_container, host, port) = start().await;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("backup.dacpac");
+    std::fs::write(&file_path, b"not a package").unwrap();
+
+    let config = make_config(host.clone(), port, "msdb", "5a445eb4-c2c6-4bde-a423-ee1385dcf6dd");
+    let result = DatabaseFactory::create_for_restore(config, &file_path)
+        .await
+        .restore(&file_path, Arc::new(JobLogger::new()))
+        .await;
+
+    assert!(format!("{:#}", result.unwrap_err()).contains("system database"));
+    assert_eq!(
+        scalar(&host, port, "master", "sa", SA_PASSWORD, "SELECT CASE WHEN DB_ID('msdb') IS NULL THEN 0 ELSE 1 END").await,
+        1
+    );
+    assert_eq!(
+        scalar(
+            &host,
+            port,
+            "master",
+            "sa",
+            SA_PASSWORD,
+            "SELECT CASE WHEN DATABASEPROPERTYEX('msdb', 'UserAccess') = 'MULTI_USER' THEN 1 ELSE 0 END"
+        )
+        .await,
+        1
+    );
+}
+
 mod format_tests {
     use super::{make_config, with_backup_format};
     use crate::domain::mssql::format::MssqlFormat;
