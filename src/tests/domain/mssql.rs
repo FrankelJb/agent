@@ -332,6 +332,47 @@ async fn mssql_restore_rejects_unknown_extension_test() {
     );
 }
 
+#[tokio::test]
+async fn mssql_restore_refuses_without_create_database_test() {
+    init_tracing_for_test();
+    let (_container, host, port) = start().await;
+    create_user_database(&host, port, "ownerdb").await;
+    exec(&host, port, "master", "CREATE LOGIN owner_login WITH PASSWORD = 'Owner!Str0ng1'").await;
+    exec(
+        &host,
+        port,
+        "ownerdb",
+        "CREATE TABLE dbo.users (id INT PRIMARY KEY, email NVARCHAR(100) NOT NULL); \
+         INSERT dbo.users VALUES (1, 'a@x'), (2, 'b@x'), (3, 'c@x'); \
+         CREATE USER owner_user FOR LOGIN owner_login; \
+         ALTER ROLE db_owner ADD MEMBER owner_user;",
+    )
+    .await;
+
+    let config = make_config(host.clone(), port, "ownerdb", "5a445eb4-c2c6-4bde-a423-ee1385dcf6db");
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = DatabaseFactory::create_for_backup(config.clone())
+        .await
+        .backup(temp_dir.path(), Arc::new(JobLogger::new()))
+        .await
+        .unwrap();
+
+    let mut owner_config = config;
+    owner_config.username = "owner_login".to_string();
+    owner_config.password = "Owner!Str0ng1".to_string();
+    let result = DatabaseFactory::create_for_restore(owner_config, &file_path)
+        .await
+        .restore(&file_path, Arc::new(JobLogger::new()))
+        .await;
+
+    assert!(format!("{:#}", result.unwrap_err()).contains("CREATE DATABASE"));
+    assert_eq!(
+        scalar(&host, port, "master", "sa", SA_PASSWORD, "SELECT CASE WHEN DB_ID('ownerdb') IS NULL THEN 0 ELSE 1 END").await,
+        1
+    );
+    assert_eq!(scalar(&host, port, "ownerdb", "sa", SA_PASSWORD, "SELECT COUNT(*) FROM dbo.users").await, 3);
+}
+
 mod format_tests {
     use super::{make_config, with_backup_format};
     use crate::domain::mssql::format::MssqlFormat;

@@ -10,6 +10,8 @@ use std::time::Instant;
 const DROP_DATABASE_SQL: &str = "DECLARE @q nvarchar(258) = QUOTENAME(@P1);
 IF DB_ID(@P1) IS NOT NULL
 BEGIN
+    IF HAS_PERMS_BY_NAME(NULL, 'DATABASE', 'CREATE DATABASE') = 0
+        THROW 50000, N'Restore needs CREATE DATABASE permission (dbcreator) to recreate the target database; nothing was dropped', 1;
     IF CAST(SERVERPROPERTY('EngineEdition') AS int) <> 5
         EXEC(N'ALTER DATABASE ' + @q + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE');
     EXEC(N'DROP DATABASE ' + @q);
