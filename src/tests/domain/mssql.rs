@@ -1,8 +1,10 @@
 use crate::domain::factory::DatabaseFactory;
+use crate::services::backup::logger::JobLogger;
 use crate::services::config::{DatabaseConfig, DbType};
 use crate::tests::init_tracing_for_test;
 use crate::utils::compress::{compress_to_tar_gz_large, decompress_large_tar_gz};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use tiberius::{AuthMethod, Client, Config};
@@ -10,7 +12,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use testcontainers::core::IntoContainerPort;
 use tokio::net::TcpStream;
-use tokio_util::compat::TokioAsyncWriteCompatExt;
+use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use tracing::{error, info};
 
 const SA_PASSWORD: &str = "Test!Str0ng1";
@@ -61,6 +63,43 @@ fn make_config(host: String, port: u16, database: &str, generated_id: &str) -> D
     }
 }
 
+async fn start() -> (ContainerAsync<GenericImage>, String, u16) {
+    let container = start_container().await;
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    let host = container.get_host().await.unwrap().to_string();
+    let port = container.get_host_port_ipv4(1433).await.unwrap();
+    (container, host, port)
+}
+
+async fn connect_as(host: &str, port: u16, database: &str, user: &str, password: &str) -> Client<Compat<TcpStream>> {
+    let mut config = Config::new();
+    config.host(host);
+    config.port(port);
+    config.database(database);
+    config.authentication(AuthMethod::sql_server(user, password));
+    config.trust_cert();
+
+    let tcp = TcpStream::connect(config.get_addr()).await.unwrap();
+    tcp.set_nodelay(true).unwrap();
+    Client::connect(config, tcp.compat_write()).await.unwrap()
+}
+
+async fn exec(host: &str, port: u16, database: &str, sql: &str) {
+    let mut client = connect_as(host, port, database, "sa", SA_PASSWORD).await;
+    client.simple_query(sql).await.unwrap().into_results().await.unwrap();
+}
+
+async fn scalar(host: &str, port: u16, database: &str, user: &str, password: &str, sql: &str) -> i32 {
+    let mut client = connect_as(host, port, database, user, password).await;
+    let row = client.simple_query(sql).await.unwrap().into_row().await.unwrap().unwrap();
+    row.get::<i32, _>(0).unwrap()
+}
+
+fn with_backup_format(mut config: DatabaseConfig, format: &str) -> DatabaseConfig {
+    config.options.insert("backup_format".to_string(), serde_json::json!(format));
+    config
+}
+
 #[tokio::test]
 async fn mssql_ping_test() {
     init_tracing_for_test();
@@ -102,8 +141,8 @@ async fn mssql_backup_test() {
         "backup file should be non-empty"
     );
     assert!(
-        file_path.extension().and_then(|e| e.to_str()) == Some("bacpac"),
-        "backup file should have .bacpac extension"
+        file_path.extension().and_then(|e| e.to_str()) == Some("dacpac"),
+        "backup file should have .dacpac extension"
     );
 }
 
@@ -151,5 +190,91 @@ async fn mssql_backup_restore_test() {
             error!("MSSQL restore failed: {:?}", e);
             panic!("Restore failed: {:?}", e);
         }
+    }
+}
+
+#[tokio::test]
+async fn mssql_backup_bacpac_test() {
+    init_tracing_for_test();
+    let (_container, host, port) = start().await;
+    create_user_database(&host, port, "bacpacdb").await;
+
+    let config = with_backup_format(
+        make_config(host, port, "bacpacdb", "5a445eb4-c2c6-4bde-a423-ee1385dcf6d6"),
+        "bacpac",
+    );
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = DatabaseFactory::create_for_backup(config)
+        .await
+        .backup(temp_dir.path(), Arc::new(JobLogger::new()))
+        .await
+        .unwrap();
+
+    assert!(file_path.metadata().unwrap().len() > 0);
+    assert_eq!(file_path.extension().and_then(|e| e.to_str()), Some("bacpac"));
+}
+
+#[tokio::test]
+async fn mssql_backup_windows_principal_test() {
+    init_tracing_for_test();
+    let (_container, host, port) = start().await;
+    create_user_database(&host, port, "windowsdb").await;
+    exec(
+        &host,
+        port,
+        "windowsdb",
+        "CREATE TABLE dbo.t (id INT PRIMARY KEY); INSERT dbo.t VALUES (1); \
+         CREATE USER [NT AUTHORITY\\SYSTEM] FOR LOGIN [NT AUTHORITY\\SYSTEM];",
+    )
+    .await;
+
+    let config = make_config(host, port, "windowsdb", "5a445eb4-c2c6-4bde-a423-ee1385dcf6d7");
+    let temp_dir = TempDir::new().unwrap();
+
+    let bacpac = DatabaseFactory::create_for_backup(with_backup_format(config.clone(), "bacpac"))
+        .await
+        .backup(temp_dir.path(), Arc::new(JobLogger::new()))
+        .await;
+    assert!(bacpac.unwrap_err().to_string().contains("SQL71627"));
+
+    let file_path = DatabaseFactory::create_for_backup(config)
+        .await
+        .backup(temp_dir.path(), Arc::new(JobLogger::new()))
+        .await
+        .unwrap();
+    assert_eq!(file_path.extension().and_then(|e| e.to_str()), Some("dacpac"));
+}
+
+mod format_tests {
+    use super::{make_config, with_backup_format};
+    use crate::domain::mssql::format::MssqlFormat;
+    use std::path::Path;
+
+    #[test]
+    fn from_config_defaults_to_dacpac() {
+        let cfg = make_config("localhost".into(), 1433, "db", "00000000-0000-0000-0000-000000000000");
+        assert_eq!(MssqlFormat::from_config(&cfg), (MssqlFormat::Dacpac, None));
+        assert_eq!(
+            MssqlFormat::from_config(&with_backup_format(cfg.clone(), "dacpac")),
+            (MssqlFormat::Dacpac, None)
+        );
+        assert_eq!(
+            MssqlFormat::from_config(&with_backup_format(cfg.clone(), "bacpac")),
+            (MssqlFormat::Bacpac, None)
+        );
+        assert_eq!(
+            MssqlFormat::from_config(&with_backup_format(cfg, "zip")),
+            (MssqlFormat::Dacpac, Some("zip".to_string()))
+        );
+    }
+
+    #[test]
+    fn from_path_reads_extension() {
+        assert_eq!(MssqlFormat::from_path(Path::new("/tmp/a.dacpac")), Some(MssqlFormat::Dacpac));
+        assert_eq!(MssqlFormat::from_path(Path::new("/tmp/a.BACPAC")), Some(MssqlFormat::Bacpac));
+        assert_eq!(MssqlFormat::from_path(Path::new("/tmp/backup.dump")), None);
+        assert_eq!(MssqlFormat::from_path(Path::new("/tmp/noext")), None);
+        assert_eq!(MssqlFormat::Dacpac.extension(), ".dacpac");
+        assert_eq!(MssqlFormat::Bacpac.extension(), ".bacpac");
     }
 }

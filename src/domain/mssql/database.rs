@@ -1,3 +1,4 @@
+use super::format::MssqlFormat;
 use super::{backup, ping, restore};
 use crate::domain::factory::Database;
 use crate::services::backup::logger::JobLogger;
@@ -21,7 +22,7 @@ impl MssqlDatabase {
 #[async_trait]
 impl Database for MssqlDatabase {
     fn file_extension(&self) -> &'static str {
-        ".bacpac"
+        MssqlFormat::from_config(&self.cfg).0.extension()
     }
 
     async fn ping(&self) -> Result<bool> {
