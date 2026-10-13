@@ -1,3 +1,4 @@
+use super::format::MssqlFormat;
 use crate::services::backup::logger::JobLogger;
 use crate::services::config::DatabaseConfig;
 use anyhow::{Context, Result};
@@ -7,9 +8,23 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub async fn run(cfg: DatabaseConfig, restore_file: PathBuf, logger: Arc<JobLogger>) -> Result<()> {
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        logger.log("debug", format!("Starting MSSQL restore for database {}", cfg.name));
+    logger.log("debug", format!("Starting MSSQL restore for database {}", cfg.name));
 
+    let Some(format) = MssqlFormat::from_path(&restore_file) else {
+        let message = format!(
+            "Unsupported MSSQL backup file {}: expected .bacpac or .dacpac",
+            restore_file.display()
+        );
+        logger.log("error", message.clone());
+        anyhow::bail!(message);
+    };
+
+    logger.log("info", format!("Replacing MSSQL database {} (drop if it exists, then recreate from the backup)", cfg.database));
+    let start = Instant::now();
+    super::connection::drop_database(&cfg).await?;
+    logger.log_command(format!("DROP DATABASE IF EXISTS [{}]", cfg.database), None, Some(0), Some(start.elapsed().as_millis() as f64));
+
+    tokio::task::spawn_blocking(move || -> Result<()> {
         let connection_string = format!(
             "Server=tcp:{},{};Database={};User Id={};Password={};TrustServerCertificate=True;Encrypt=False",
             cfg.host, cfg.port, cfg.database, cfg.username, cfg.password
@@ -24,8 +39,12 @@ pub async fn run(cfg: DatabaseConfig, restore_file: PathBuf, logger: Arc<JobLogg
         ));
 
         let start = Instant::now();
-        let output = Command::new("sqlpackage")
-            .arg("/a:Import")
+        let mut command = Command::new("sqlpackage");
+        match format {
+            MssqlFormat::Dacpac => command.args(["/a:Publish", "/p:AllowIncompatiblePlatform=True"]),
+            MssqlFormat::Bacpac => command.arg("/a:Import"),
+        };
+        let output = command
             .arg(format!("/tcs:{}", connection_string))
             .arg(format!("/sf:{}", restore_file.display()))
             .output()

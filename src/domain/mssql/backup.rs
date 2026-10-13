@@ -1,3 +1,4 @@
+use super::format::MssqlFormat;
 use crate::services::backup::logger::JobLogger;
 use crate::services::config::DatabaseConfig;
 use anyhow::{Context, Result};
@@ -13,7 +14,12 @@ pub async fn run(
     logger: Arc<JobLogger>,
 ) -> Result<PathBuf> {
     tokio::task::spawn_blocking(move || -> Result<PathBuf> {
-        logger.log("info", format!("Starting MSSQL backup for database {}", cfg.name));
+        let (format, unknown_format) = MssqlFormat::from_config(&cfg);
+        if let Some(v) = unknown_format {
+            logger.log("warn", format!("Unknown backup_format '{}' for {}, falling back to 'dacpac'", v, cfg.name));
+        }
+
+        logger.log("info", format!("Starting MSSQL {} backup for database {}", &format.extension()[1..], cfg.name));
 
         let file_path = backup_dir.join(format!("{}{}", cfg.generated_id, file_extension));
         let connection_string = format!(
@@ -24,8 +30,18 @@ pub async fn run(
         logger.log("info", format!("MSSQL backup: {}:{}/{} → {}", cfg.host, cfg.port, cfg.database, file_path.display()));
 
         let start = Instant::now();
-        let output = Command::new("sqlpackage")
-            .arg("/a:Export")
+        let mut command = Command::new("sqlpackage");
+        match format {
+            MssqlFormat::Dacpac => command.args([
+                "/a:Extract",
+                "/p:ExtractAllTableData=True",
+                "/p:ExtractReferencedServerScopedElements=False",
+                "/p:IgnorePermissions=False",
+                "/p:IgnoreUserLoginMappings=False",
+            ]),
+            MssqlFormat::Bacpac => command.arg("/a:Export"),
+        };
+        let output = command
             .arg(format!("/scs:{}", connection_string))
             .arg(format!("/tf:{}", file_path.display()))
             .output()
