@@ -924,6 +924,61 @@ mod clean_mode_tests {
     }
 }
 
+mod exclude_args_tests {
+    use crate::domain::postgres::backup::exclude_args;
+    use crate::services::config::DatabaseConfig;
+    use serde_json::json;
+
+    fn cfg(options: serde_json::Value) -> DatabaseConfig {
+        serde_json::from_value(json!({
+            "name": "t", "database": "testdb", "type": "postgresql",
+            "username": "u", "password": "p", "port": 5432, "host": "localhost",
+            "generated_id": "00000000-0000-0000-0000-000000000000",
+            "path": "", "max_packet_size": "", "volume_name": "",
+            "options": options
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn no_options_yields_nothing() {
+        assert_eq!(exclude_args(&cfg(json!({}))), (vec![], vec![]));
+        assert_eq!(
+            exclude_args(&cfg(json!({"exclude_tables": [], "exclude_schemas": []}))),
+            (vec![], vec![])
+        );
+    }
+
+    #[test]
+    fn lists_map_to_single_arg_flags_in_order() {
+        let (args, invalid) = exclude_args(&cfg(json!({
+            "exclude_schemas": ["metabase_tmp"],
+            "exclude_tables": ["public.search_index__*", "  audit.tmp_*  ", "", "   ", 42, "-f/tmp/x", "\"MyTable\""]
+        })));
+        assert_eq!(
+            args,
+            vec![
+                "--exclude-table=public.search_index__*",
+                "--exclude-table=audit.tmp_*",
+                "--exclude-table=-f/tmp/x",
+                "--exclude-table=\"MyTable\"",
+                "--exclude-schema=metabase_tmp",
+            ]
+        );
+        assert!(invalid.is_empty());
+    }
+
+    #[test]
+    fn non_list_values_are_reported_and_ignored() {
+        let (args, invalid) = exclude_args(&cfg(json!({
+            "exclude_tables": "public.search_index__*",
+            "exclude_schemas": {"a": 1}
+        })));
+        assert!(args.is_empty());
+        assert_eq!(invalid, vec!["exclude_tables", "exclude_schemas"]);
+    }
+}
+
 mod toc_tests {
     use crate::domain::postgres::restore::toc_creates_public_schema;
 

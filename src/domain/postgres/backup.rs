@@ -151,3 +151,25 @@ pub async fn run(
     })
     .await?
 }
+
+/// `--exclude-table=` / `--exclude-schema=` args from `options`, plus the keys
+/// whose value was not a list of strings (ignored, caller warns).
+pub(crate) fn exclude_args(cfg: &DatabaseConfig) -> (Vec<String>, Vec<&'static str>) {
+    let mut args = Vec::new();
+    let mut invalid = Vec::new();
+    for (key, flag) in [("exclude_tables", "--exclude-table"), ("exclude_schemas", "--exclude-schema")] {
+        match cfg.options.get(key).map(|v| v.as_array()) {
+            None => {}
+            Some(Some(items)) => args.extend(
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(|p| format!("{flag}={p}")),
+            ),
+            Some(None) => invalid.push(key),
+        }
+    }
+    (args, invalid)
+}
