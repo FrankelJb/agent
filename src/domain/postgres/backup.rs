@@ -162,8 +162,6 @@ pub async fn run(
     .await?
 }
 
-/// `--exclude-table=` / `--exclude-schema=` args from `options`, plus the keys
-/// whose value was not a list of strings (ignored, caller warns).
 pub(crate) fn exclude_args(cfg: &DatabaseConfig) -> (Vec<String>, Vec<&'static str>) {
     let mut args = Vec::new();
     let mut invalid = Vec::new();
