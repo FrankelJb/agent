@@ -317,6 +317,62 @@ async fn restore_run_unified_fc_roundtrip() {
 }
 
 #[tokio::test]
+async fn backup_as_non_owner_succeeds_only_with_exclude_tables() {
+    init_tracing_for_test();
+
+    let (_container, admin) = create_config().await;
+    crate::domain::postgres::connection::connect(&admin)
+        .await
+        .unwrap()
+        .batch_execute(
+            "CREATE ROLE backup_ro LOGIN PASSWORD 'x';
+             CREATE TABLE public.keep(id int);
+             CREATE TABLE public.search_index__x(id int);
+             GRANT SELECT ON public.keep TO backup_ro;",
+        )
+        .await
+        .unwrap();
+
+    let mut ro = admin.clone();
+    ro.username = "backup_ro".into();
+    ro.password = "x".into();
+
+    let mut excluded = ro.clone();
+    excluded
+        .options
+        .insert("exclude_tables".into(), serde_json::json!(["public.search_index__*"]));
+
+    for format in [PostgresDumpFormat::Fc, PostgresDumpFormat::Fd] {
+        let dir = TempDir::new().unwrap();
+        let denied = crate::domain::postgres::backup::run(
+            ro.clone(), format, dir.path().to_path_buf(), pg_dump_env(&ro), Arc::new(JobLogger::new()),
+        )
+        .await;
+        assert!(denied.is_err(), "{format:?}: non-owner dump must fail without exclusions");
+
+        let dir = TempDir::new().unwrap();
+        let logger = Arc::new(JobLogger::new());
+        let dump = crate::domain::postgres::backup::run(
+            excluded.clone(), format, dir.path().to_path_buf(), pg_dump_env(&excluded), logger.clone(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{format:?}: dump with exclusions failed: {e:?}"));
+
+        let entries = Arc::try_unwrap(logger).expect("single owner").into_entries();
+        assert!(entries.iter().any(|e| e.message
+            == format!("Excluding from dump of {}: --exclude-table=public.search_index__*", excluded.name)));
+
+        if format == PostgresDumpFormat::Fc {
+            let version = server_version(&admin).await.unwrap();
+            let pg_restore = select_pg_path(&version).join(pg_restore_binary_name());
+            let prepared = prepare_archive(format, &dump, &pg_restore, &JobLogger::new()).unwrap();
+            assert!(prepared.toc().contains("TABLE public keep "));
+            assert!(!prepared.toc().contains("search_index__x"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn drop_all_schemas_removes_user_schema() {
     init_tracing_for_test();
 
