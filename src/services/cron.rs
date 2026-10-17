@@ -19,7 +19,6 @@ pub fn backup_task_name(generated_id: &str) -> String {
     format!("{BACKUP_TASK_PREFIX}{generated_id}")
 }
 
-/// Task names of scheduled backups whose database is not in `live_ids`.
 pub fn stale_backup_tasks(scheduled_keys: &[String], live_ids: &HashSet<&str>) -> Vec<String> {
     scheduled_keys
         .iter()
@@ -68,7 +67,6 @@ impl CronService {
         Ok(true)
     }
 
-    /// Removes scheduled backups of databases the dashboard no longer returns.
     pub async fn prune(&mut self, live_ids: &HashSet<&str>) {
         let keys: Vec<String> = match self.conn.zrange(SCHEDULE_KEY, 0, -1).await {
             Ok(keys) => keys,
