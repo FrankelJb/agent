@@ -9,6 +9,7 @@ use crate::services::restore::RestoreService;
 use crate::services::status::StatusService;
 use crate::settings::CONFIG;
 use crate::utils::common::BackupMethod;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -58,6 +59,13 @@ impl Agent {
         if let Err(e) = persist_cache(&self.cache_path, &self.dashboard_cache) {
             error!("Failed to persist dashboard cache: {e}");
         }
+
+        let live_ids: HashSet<&str> = ping_result
+            .databases
+            .iter()
+            .map(|d| d.generated_id.as_str())
+            .collect();
+        self.cron_service.prune(&live_ids).await;
 
         let merged = merge(&local.databases, &self.dashboard_cache);
 
