@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
-use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
@@ -54,7 +53,7 @@ pub fn full_file_path(file_name: &String, folder_name: Option<&str>) -> String {
         .filter(|folder_name| !folder_name.is_empty())
         .unwrap_or("backups");
 
-    format!("{}/{}/{}", folder_name, Local::now().format("%Y-%m-%d"), file_name)
+    format!("{}/{}/{}", folder_name, chrono::Local::now().format("%Y-%m-%d"), file_name)
 }
 
 const CHUNK_SIZE: usize = 16 * 1024 * 1024;
