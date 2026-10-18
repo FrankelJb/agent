@@ -194,8 +194,8 @@ async fn gcs_emulator_target_reaches_fake_gcs_through_rclone() {
 #[tokio::test]
 async fn s3_target_hosts_a_restic_repository() {
     use crate::services::backup::logger::JobLogger;
-    use crate::services::restic::backup::snapshot;
-    use crate::services::restic::command::ResticRepo;
+    use crate::domain::files::restic::backup::snapshot;
+    use crate::domain::files::restic::repo::ResticRepo;
     use base64::{Engine as _, engine::general_purpose};
 
     let (_container, endpoint) = start_minio().await; // "http://host:port"
@@ -236,7 +236,7 @@ async fn s3_target_hosts_a_restic_repository() {
 #[tokio::test]
 async fn s3_targets_host_one_sync_replica_per_channel() {
     use crate::services::backup::logger::JobLogger;
-    use crate::services::sync::backup::one_storage;
+    use crate::services::backup::files_engine::{FilesEngine, one_storage};
     use crate::tests::services::backup_uploader_tests::ctx_pointing_at;
     use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -284,7 +284,7 @@ async fn s3_targets_host_one_sync_replica_per_channel() {
     let ctx = ctx_pointing_at(server.uri());
 
     for c in &channels {
-        let result = one_storage(&ctx, &cfg, c, "backup-1", &JobLogger::new()).await;
+        let result = one_storage(&ctx, &cfg, FilesEngine::Sync, c, "backup-1", &JobLogger::new()).await;
         assert!(result.success, "{:?}", result.error);
         assert_eq!(result.remote_file_path.as_deref(), Some(format!("backups/sync/{}/current", cfg.generated_id).as_str()));
         assert_eq!(result.total_size, Some(2), "backups.file_size is the replica size");

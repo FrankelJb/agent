@@ -4,9 +4,10 @@
 
 use crate::domain::files::platform::is_root;
 use crate::services::backup::logger::JobLogger;
-use crate::services::restic::backup::snapshot;
-use crate::services::restic::command::ResticRepo;
-use crate::services::restic::restore::restore;
+use crate::domain::files::restic::backup::snapshot;
+use crate::domain::files::restic::repo::ResticRepo;
+use crate::domain::files::restic::restore::restore;
+use crate::services::storage::providers::local::local_storage_password;
 use crate::tests::domain::files::files_config;
 use std::fs;
 use std::path::Path;
@@ -134,8 +135,7 @@ async fn local_sync_mirrors_through_the_webdav_server() {
     use crate::core::context::Context;
     use crate::services::api::ApiClient;
     use crate::services::api::models::agent::status::DatabaseStorage;
-    use crate::services::restic::password::local_storage_password;
-    use crate::services::sync::backup::one_storage;
+    use crate::services::backup::files_engine::{FilesEngine, one_storage};
     use crate::utils::edge_key::EdgeKey;
     use serde_json::json;
     use wiremock::matchers::{body_partial_json, method, path};
@@ -177,14 +177,22 @@ async fn local_sync_mirrors_through_the_webdav_server() {
     let cfg = files_config(&src, &[]);
     let replica = store.path().join(&cfg.generated_id).join("current");
 
-    let first = one_storage(&ctx, &cfg, &storage, "backup-1", &JobLogger::new()).await;
+    let first = one_storage(&ctx, &cfg, FilesEngine::Sync, &storage, "backup-1", &JobLogger::new()).await;
     assert!(first.success, "{:?}", first.error);
     assert_eq!(first.remote_file_path.as_deref(), Some(format!("backups/sync/{}/current", cfg.generated_id).as_str()));
     assert_eq!(fs::read_to_string(replica.join("docs/b.txt")).unwrap(), "b");
 
     fs::remove_file(src.join("docs/b.txt")).unwrap();
-    let second = one_storage(&ctx, &cfg, &storage, "backup-2", &JobLogger::new()).await;
+    let second = one_storage(&ctx, &cfg, FilesEngine::Sync, &storage, "backup-2", &JobLogger::new()).await;
     assert!(second.success, "{:?}", second.error);
     assert!(!replica.join("docs/b.txt").exists(), "deletion propagated");
     assert!(replica.join("a.txt").exists());
+}
+
+#[test]
+fn local_storage_password_matches_the_dashboard_vector() {
+    assert_eq!(
+        local_storage_password(MASTER_KEY_B64).unwrap(),
+        "8abfb788701b8c502658154746af6af768ea08f579381ad73b0f1e7dd43caea2"
+    );
 }

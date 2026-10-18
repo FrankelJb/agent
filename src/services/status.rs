@@ -36,7 +36,6 @@ pub fn resolve_dashboard_config(
     Ok(())
 }
 
-/// A storage channel sent encrypted as a one-element JSON array.
 fn decrypt_storage(ciphertext: &str, master_key_b64: &str, what: &str) -> Result<Option<DatabaseStorage>, String> {
     let plaintext = decrypt_json_gcm(ciphertext, master_key_b64)
         .map_err(|e| format!("Failed to decrypt {what} storage: {e}"))?;
@@ -45,7 +44,6 @@ fn decrypt_storage(ciphertext: &str, master_key_b64: &str, what: &str) -> Result
     Ok(storages.into_iter().next())
 }
 
-/// Decrypts the storage channel of a snapshot restore (`restore.storageCiphertext`).
 pub fn resolve_restore_storage(status: &mut DatabaseStatus, master_key_b64: &str) -> Result<(), String> {
     if let Some(ciphertext) = status.data.restore.storage_ciphertext.clone() {
         status.data.restore.storage = decrypt_storage(&ciphertext, master_key_b64, "restore")?;
@@ -53,8 +51,6 @@ pub fn resolve_restore_storage(status: &mut DatabaseStatus, master_key_b64: &str
     Ok(())
 }
 
-/// `method` reported in the ping for a files source declared in databases.json;
-/// `None` for dashboard-managed sources (the dashboard owns their method) and other dbms.
 pub fn payload_method(db: &DatabaseConfig, local_ids: &HashSet<String>) -> Option<&'static str> {
     (matches!(db.db_type, DbType::Files) && local_ids.contains(&db.generated_id)).then(|| files_method(db))
 }

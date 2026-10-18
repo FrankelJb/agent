@@ -1,10 +1,9 @@
+use super::files_engine::{self, FilesEngine};
 use super::logger::JobLogger;
 use super::models::BackupResult;
 use super::service::BackupService;
 use crate::services::api::models::agent::status::DatabaseStorage;
 use crate::services::config::{DatabaseConfig, DbType};
-use crate::services::restic;
-use crate::services::sync;
 use crate::utils::common::BackupMethod;
 use crate::utils::locks::FileLock;
 
@@ -34,13 +33,9 @@ impl BackupService {
         let backup = self.create_backup_record(&generated_id, &method).await?;
         let backup_id = backup.backup.id;
 
-        if engine == "restic" || engine == "sync" {
+        if let Some(files_engine) = FilesEngine::parse(&engine) {
             if matches!(db_cfg.db_type, DbType::Files) {
-                let uploads = if engine == "restic" {
-                    restic::backup::run(&self.ctx, &db_cfg, &storages, &backup_id, &logger).await
-                } else {
-                    sync::backup::run(&self.ctx, &db_cfg, &storages, &backup_id, &logger).await
-                };
+                let uploads = files_engine::run(&self.ctx, &db_cfg, files_engine, &storages, &backup_id, &logger).await;
                 logger.log("info", "Database backup job finished".to_string());
                 let result = BackupResult {
                     generated_id: generated_id.clone(),
@@ -51,8 +46,6 @@ impl BackupService {
                 };
                 let duration_ms = start.elapsed().as_millis() as f64;
                 let logs = Arc::try_unwrap(logger).unwrap_or_else(|_| JobLogger::new()).into_entries();
-                // fileSize = average logical size across storages (send_result): restic reports
-                // the size each snapshot processed; sync reports none, so it stays null.
                 self.send_result(result, uploads, &backup_id, logs, duration_ms).await?;
                 return Ok(());
             }

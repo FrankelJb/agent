@@ -329,7 +329,7 @@ fn ping_payload_sends_method_only_when_set() {
 #[test]
 fn upload_status_sends_stats_only_when_set() {
     use crate::services::api::endpoints::agent::backup::upload::status::StatusUploadRequest;
-    use crate::services::sync::stats::SyncStats;
+    use crate::domain::files::sync::stats::SyncStats;
     let request = |stats: Option<serde_json::Value>| StatusUploadRequest {
         generated_id: "g".into(),
         backup_storage_id: "bs".into(),

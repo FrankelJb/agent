@@ -1,7 +1,5 @@
-//! Sync mode (rclone replica). Pure helpers first; integration tests need `rclone` on PATH.
-
-use crate::services::sync::excludes::sync_excludes;
-use crate::services::sync::stats::{SyncStats, parse_log};
+use crate::domain::files::sync::excludes::sync_excludes;
+use crate::domain::files::sync::stats::{SyncStats, parse_log};
 
 fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| s.to_string()).collect()
@@ -109,11 +107,9 @@ fn sync_excludes_collapses_repeated_double_stars() {
     );
 }
 
-// ---------- integration: rclone on PATH, `alias` remote under a temp dir ----------
-
 use crate::domain::files::platform::is_root;
 use crate::services::backup::logger::JobLogger;
-use crate::services::sync::rclone::{replica_target, sync_dir};
+use crate::domain::files::sync::rclone::{replica_target, sync_dir};
 use crate::tests::domain::files::files_config;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -128,7 +124,6 @@ fn replica(store: &Path, generated_id: &str) -> PathBuf {
     store.join("backups/sync").join(generated_id).join("current")
 }
 
-/// `relative/path=content` for every regular file, sorted.
 fn files(root: &Path) -> Vec<String> {
     let mut out: Vec<String> = walkdir::WalkDir::new(root)
         .min_depth(1)
@@ -202,7 +197,7 @@ async fn a_later_exclude_removes_files_from_the_replica() {
 #[tokio::test]
 async fn failed_sync_keeps_files_the_failed_run_would_delete() {
     if is_root() {
-        return; // root reads a 000 file anyway
+        return;
     }
     use std::os::unix::fs::PermissionsExt;
     let store = TempDir::new().unwrap();
@@ -214,7 +209,6 @@ async fn failed_sync_keeps_files_the_failed_run_would_delete() {
 
     fs::remove_file(src.path().join("docs/b.txt")).unwrap();
     let locked = src.path().join("docs/a.txt");
-    // rclone only opens a file whose size/mtime changed, so the unreadable file must differ from the replica's copy.
     fs::write(&locked, "changed and now unreadable").unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     let err = sync_dir(&config, &replica_target("pb", "", "backups", &cfg.generated_id), &cfg, &JobLogger::new()).await.unwrap_err();
@@ -234,10 +228,8 @@ async fn empty_source_is_refused_and_the_replica_is_untouched() {
     assert!(!store.path().join("backups").exists());
 }
 
-// ---------- sync as a backup method ----------
-
 use crate::services::api::models::agent::status::DatabaseStorage;
-use crate::services::sync::backup::replica_path;
+use crate::domain::files::sync::backup::replica_path;
 use serde_json::json;
 
 #[test]
@@ -252,7 +244,7 @@ fn replica_path_uses_the_channel_folder() {
 
 #[test]
 fn local_sync_config_points_at_the_dashboard_webdav_server() {
-    use crate::services::sync::backup::local_sync_config;
+    use crate::domain::files::sync::backup::local_sync_config;
     use crate::utils::edge_key::EdgeKey;
     let edge_key = EdgeKey {
         server_url: "http://dash:8887/".into(),

@@ -1,4 +1,4 @@
-use super::matcher::ExcludeMatcher;
+use super::matcher::{ExcludeMatcher, one_file_system};
 use super::platform::{dev, is_root};
 use crate::services::backup::logger::JobLogger;
 use crate::services::config::DatabaseConfig;
@@ -14,25 +14,16 @@ pub async fn run(cfg: DatabaseConfig, archive: PathBuf, logger: Arc<JobLogger>) 
 }
 
 fn restore(cfg: &DatabaseConfig, archive: &Path, logger: &JobLogger) -> Result<()> {
-    // Everything below works on the canonical path, like backup.rs.
     let root = ensure_restorable(Path::new(&cfg.path))?;
     let mut matcher = ExcludeMatcher::from_config(cfg)?;
-    let one_file_system = cfg
-        .options
-        .get("one_file_system")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let one_file_system = one_file_system(cfg);
 
-    // Opened once: the wipe may delete the archive's path, never an open handle.
     let file = File::open(archive)
         .with_context(|| format!("cannot open archive {}", archive.display()))?;
 
-    // The wipe is irreversible: prove the whole archive reads back before touching data.
     logger.log("info", format!("Validating archive {}", archive.display()));
     validate_archive(&file).context("archive is corrupt or truncated, nothing was changed")?;
 
-    // Keep the archive's own directory (or the archive itself when it sits directly
-    // in the target), like backup.rs prunes its output.
     let archive_real = fs::canonicalize(archive)?;
     let keep = match archive_real.parent() {
         Some(dir) if dir != root => dir,
@@ -46,7 +37,7 @@ fn restore(cfg: &DatabaseConfig, archive: &Path, logger: &JobLogger) -> Result<(
         "info",
         format!("Removing non-excluded content of {}", root.display()),
     );
-    // Best effort: whatever could not be removed is kept, and extraction always runs.
+
     let failures = wipe_except_excluded(&root, &matcher, one_file_system, logger)?;
 
     logger.log(
@@ -65,9 +56,6 @@ fn restore(cfg: &DatabaseConfig, archive: &Path, logger: &JobLogger) -> Result<(
     Ok(())
 }
 
-/// Extract the whole archive into `root`. Filesystems that refuse chown/chmod/utime
-/// (NFS root_squash, CIFS, NFSv4 idmap mismatch) fail the first pass, after the wipe,
-/// so retry once without metadata: the content matters more than owner and mode.
 pub fn unpack(
     file: &File,
     root: &Path,
@@ -79,9 +67,6 @@ pub fn unpack(
             "warn",
             format!("extraction with ownership/permissions failed: {e:#}; retrying without metadata preservation"),
         );
-        // ponytail: tar-rs still chmods to `mode & 0o777` with preservation off, so a
-        // filesystem that rejects chmod on files the agent just created fails this pass
-        // too; per-entry extraction with deferred directories if that shows up.
         unpack_once(file, root, false, false)?;
     }
     Ok(())
@@ -103,7 +88,6 @@ fn unpack_once(
     Ok(())
 }
 
-/// Read every entry to the end, then drain the gzip stream so its CRC is checked.
 fn validate_archive(file: &File) -> Result<()> {
     let mut gz = GzDecoder::new(file);
     let mut ar = tar::Archive::new(&mut gz);
@@ -111,14 +95,10 @@ fn validate_archive(file: &File) -> Result<()> {
         io::copy(&mut entry?, &mut io::sink())?;
     }
     drop(ar);
-    // tar stops at its end marker, before the gzip trailer.
     gz.read_to_end(&mut Vec::new())?;
     Ok(())
 }
 
-/// Refuse targets a mirror restore must never touch, and return the canonical path to
-/// restore into. The canonical path is checked too, because `/data/..` style escapes
-/// resolve to `/`.
 pub fn ensure_restorable(root: &Path) -> Result<PathBuf> {
     if root.as_os_str().is_empty() || !root.is_absolute() || root == Path::new("/") {
         bail!(
@@ -140,18 +120,6 @@ pub fn ensure_restorable(root: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-/// Delete everything under `root` that does not match an exclude pattern.
-/// Excluded entries (and their subtrees) are kept; `root` itself is kept.
-///
-/// Mount points (a directory on a different device than its parent): with
-/// `one_file_system` they are kept untouched like an excluded path, matching what
-/// backup never archived. Without it their contents are wiped but the mount point
-/// itself is never removed (`remove_dir` on it fails with EBUSY) and counts as kept.
-/// Special files (sockets, fifos, devices) are kept: backup never archives them.
-///
-/// Best effort: an entry that cannot be read or removed is logged, kept (so its
-/// parents are kept too) and counted; the returned count is how many failed.
-/// Only an unreadable `root` is an error, and then nothing was deleted.
 pub fn wipe_except_excluded(
     root: &Path,
     matcher: &ExcludeMatcher,
@@ -183,8 +151,6 @@ impl Wipe<'_> {
         self.failures += 1;
     }
 
-    /// Returns true when something was kept inside `dir`. `rel` is `dir` relative to
-    /// the root and `dir_dev` its device.
     fn dir(&mut self, dir: &Path, rel: &Path, dir_dev: u64) -> bool {
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
@@ -209,7 +175,7 @@ impl Wipe<'_> {
                 kept = true;
                 continue;
             }
-            // symlink_metadata: a symlinked directory is removed as a link, never followed.
+
             let meta = match fs::symlink_metadata(&path) {
                 Ok(meta) => meta,
                 Err(e) => {
@@ -233,7 +199,6 @@ impl Wipe<'_> {
             } else if ft.is_file() || ft.is_symlink() {
                 fs::remove_file(&path)
             } else {
-                // Socket, fifo or device: backup never archives them, so keep them.
                 kept = true;
                 continue;
             };

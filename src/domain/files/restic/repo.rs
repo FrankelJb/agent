@@ -1,11 +1,13 @@
 use super::json::{self, Line};
-use super::password::{derive_password, local_storage_password, LOCAL_STORAGE_USER};
+use super::password::derive_password;
 use crate::services::api::models::agent::status::DatabaseStorage;
 use crate::services::backup::logger::JobLogger;
+use crate::services::storage::providers::local::{LOCAL_STORAGE_USER, local_storage_password};
 use crate::services::storage::providers::rclone::helpers::{remote_target, write_config};
 use crate::services::storage::providers::rclone::target::{RcloneTarget, rclone_target};
 use crate::settings::CONFIG;
 use crate::utils::edge_key::EdgeKey;
+use crate::utils::file::folder_or_default;
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::ffi::{OsStr, OsString};
@@ -15,32 +17,20 @@ use tempfile::NamedTempFile;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-/// One source's repository on one storage channel:
-/// `rclone:<remote>:<base>/<folder>/restic/<generated_id>`, or
-/// `rest:<server_url>/storage/restic/<generated_id>/` on the dashboard's local storage.
 pub struct ResticRepo {
     repository: String,
     password: String,
-    /// `None` when the cache directory cannot be created: restic then runs `--no-cache`.
     cache_dir: Option<PathBuf>,
-    /// rclone config of `rclone:` repositories; `None` on the dashboard's REST server.
     config: Option<NamedTempFile>,
-    /// HTTP basic auth of `rest:` repositories (the dashboard's local storage).
     rest_auth: Option<(String, String)>,
-    /// Keeps temp files referenced by the config (sftp key) alive.
     _target: Option<RcloneTarget>,
 }
 
-/// What a finished restic command left behind.
 pub struct ResticRun {
     pub code: i32,
-    /// stdout lines that are neither `status` nor `summary` (e.g. `snapshots --json`).
     pub stdout: String,
-    /// The last `summary` line, if any.
     pub summary: Option<Value>,
-    /// `error` lines as "item: message" (unreadable files and the like).
     pub errors: Vec<String>,
-    /// Last plain-text / `exit_error` stderr lines, for failure messages.
     pub stderr_tail: String,
 }
 
@@ -55,8 +45,6 @@ impl ResticRun {
     }
 }
 
-/// A full snapshot id. Ids from the dashboard reach restic as positional arguments:
-/// anything else could be parsed as a flag (e.g. `--password-command=<shell>`).
 pub fn is_snapshot_id(id: &str) -> bool {
     id.len() == 64 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
@@ -65,7 +53,6 @@ pub fn short(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
-/// restic fails hard (not warns) on an unusable cache dir, so probe it up front.
 fn usable_cache_dir(cache_dir: PathBuf) -> Option<PathBuf> {
     match std::fs::create_dir_all(&cache_dir) {
         Ok(()) => Some(cache_dir),
@@ -90,17 +77,11 @@ impl ResticRepo {
             ));
         }
         let target = rclone_target(storage)?;
-        let folder = storage
-            .folder_name
-            .as_deref()
-            .map(|f| f.trim().trim_matches('/'))
-            .filter(|f| !f.is_empty())
-            .unwrap_or("backups");
         let mut repo = Self::new(
             &target.config_text,
             &target.remote_name,
             &target.base_path,
-            folder,
+            folder_or_default(storage.folder_name.as_deref()),
             generated_id,
             &password,
             cache_dir,
@@ -129,8 +110,6 @@ impl ResticRepo {
         })
     }
 
-    /// The dashboard's local storage (`rclone serve restic --append-only`):
-    /// `rest:<base_url>/<generated_id>/`, basic auth only in the child env.
     pub fn rest(base_url: &str, generated_id: &str, password: &str, server_password: &str, cache_dir: PathBuf) -> Self {
         Self {
             repository: format!("rest:{}/{generated_id}/", base_url.trim_end_matches('/')),
@@ -142,7 +121,6 @@ impl ResticRepo {
         }
     }
 
-    /// The dashboard's server refuses deletions: the agent cannot forget there.
     pub fn is_append_only(&self) -> bool {
         self.rest_auth.is_some()
     }
@@ -151,8 +129,6 @@ impl ResticRepo {
         &self.repository
     }
 
-    /// `restic <args> --retry-lock 5m` (+ `--no-cache` without a cache dir); secrets only in the child env. `status`
-    /// lines are logged every 10 %.
     pub async fn run<I, S>(&self, args: I, logger: &JobLogger) -> Result<ResticRun>
     where
         I: IntoIterator<Item = S>,
@@ -177,7 +153,6 @@ impl ResticRepo {
         let mut child = cmd
             .env("RESTIC_REPOSITORY", &self.repository)
             .env("RESTIC_PASSWORD", &self.password)
-            // No TTY: without this restic prints no status lines at all.
             .env("RESTIC_PROGRESS_FPS", "0.2")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -237,8 +212,6 @@ impl ResticRepo {
         Ok(run)
     }
 
-    /// `restic cat config`; exit 10 (no repository) → `restic init`. Callers hold
-    /// the source's FileLock, so two inits never race.
     pub async fn ensure_initialized(&self, logger: &JobLogger) -> Result<()> {
         let cat = self.run(["cat", "config"], logger).await?;
         match cat.code {

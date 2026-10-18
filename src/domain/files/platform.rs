@@ -14,7 +14,6 @@ pub fn dev(_meta: &std::fs::Metadata) -> u64 {
     0
 }
 
-/// Whether the agent can restore file ownership.
 #[cfg(unix)]
 pub fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }

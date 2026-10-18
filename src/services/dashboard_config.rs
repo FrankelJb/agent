@@ -20,7 +20,6 @@ pub fn merge(local: &[DatabaseConfig], dashboard: &[DatabaseConfig]) -> Database
     DatabasesConfig { databases }
 }
 
-/// `generated_id`s of local (databases.json) sources that no dashboard config replaces.
 pub fn local_only_ids(local: &[DatabaseConfig], dashboard: &[DatabaseConfig]) -> HashSet<String> {
     local
         .iter()

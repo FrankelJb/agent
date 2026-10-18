@@ -80,3 +80,7 @@ test:
 
 seed-files:
     for d in archive snapshot sync; do mkdir -p test-files/$d && echo one > test-files/$d/a.txt && echo two > test-files/$d/b.txt; done
+
+seed-files-1gb:
+    echo "Seeding files sources (1GB each)..."
+    bash ./scripts/files/seed-1gb.sh

@@ -11,6 +11,7 @@ make seed-postgres-1gb
 make seed-all   
 make seed-sqlite   
 make seed-sqlite SEED=big   
+just seed-files-1gb
 ```
 
 ## Verify commands 

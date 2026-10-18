@@ -1,3 +1,6 @@
+mod restic;
+mod sync;
+
 use crate::domain::files::matcher::ExcludeMatcher;
 use std::path::Path;
 

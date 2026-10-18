@@ -1,10 +1,8 @@
 use crate::services::config::DatabaseConfig;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use std::path::{Path, PathBuf};
 
-/// Exclude patterns, matched against paths relative to the source root.
-/// No leading `/` matches at any depth; a leading `/` anchors at the root.
 pub struct ExcludeMatcher {
     set: GlobSet,
     literal: Vec<PathBuf>,
@@ -39,8 +37,6 @@ impl ExcludeMatcher {
         Self::new(&exclude_patterns(cfg))
     }
 
-    /// Also exclude exactly this root-relative path (and its subtree), compared
-    /// literally so glob characters in the name mean nothing.
     pub fn exclude_path(&mut self, relative: PathBuf) {
         self.literal.push(relative);
     }
@@ -50,7 +46,6 @@ impl ExcludeMatcher {
     }
 }
 
-/// The `options.exclude` patterns of a files source, as configured.
 pub fn exclude_patterns(cfg: &DatabaseConfig) -> Vec<String> {
     cfg.options
         .get("exclude")
@@ -64,10 +59,40 @@ pub fn exclude_patterns(cfg: &DatabaseConfig) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// `options.one_file_system` of a files source.
 pub fn one_file_system(cfg: &DatabaseConfig) -> bool {
     cfg.options
         .get("one_file_system")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
+}
+
+pub fn source_root(cfg: &DatabaseConfig) -> Result<PathBuf> {
+    let root = std::fs::canonicalize(&cfg.path)
+        .with_context(|| format!("cannot read source directory {}", cfg.path))?;
+    if !root.is_dir() {
+        bail!("source path {} is not a directory", root.display());
+    }
+    Ok(root)
+}
+
+pub(crate) fn bracket_negation(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars();
+    let mut in_class = false;
+    while let Some(c) = chars.next() {
+        out.push(c);
+        match c {
+            '\\' => out.extend(chars.next()),
+            '[' if !in_class => {
+                in_class = true;
+                if chars.as_str().starts_with('!') {
+                    chars.next();
+                    out.push('^');
+                }
+            }
+            ']' => in_class = false,
+            _ => {}
+        }
+    }
+    out
 }

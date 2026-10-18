@@ -1,13 +1,11 @@
-//! Snapshots mode (restic). Pure helpers first; the integration tests further
-//! down need `restic` and `rclone` on PATH.
-
 use crate::services::api::models::agent::status::DatabaseStorage;
 use crate::services::backup::logger::JobLogger;
-use crate::services::restic::command::is_snapshot_id;
-use crate::services::restic::excludes::{backup_excludes, glob_escape, restore_excludes};
-use crate::services::restic::json::{self, BackupSummary, Line};
-use crate::services::restic::password::{derive_password, hkdf_sha256_32};
+use crate::domain::files::restic::repo::is_snapshot_id;
+use crate::domain::files::restic::excludes::{backup_excludes, glob_escape, restore_excludes};
+use crate::domain::files::restic::json::{self, BackupSummary, Line};
+use crate::domain::files::restic::password::derive_password;
 use crate::tests::domain::files::files_config;
+use crate::utils::edge_key::hkdf_sha256_32;
 use serde_json::json;
 use std::path::Path;
 
@@ -34,7 +32,6 @@ fn hkdf_matches_rfc5869_case_3_first_block() {
 
 #[test]
 fn password_matches_the_dashboard_vector() {
-    // Same vector as src/lib/restic/repo.ts in the dashboard (spike S4).
     let password = derive_password(
         "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
         "test-generated-id",
@@ -83,7 +80,6 @@ fn restore_excludes_are_relative_to_the_snapshot_subfolder() {
 
 #[test]
 fn bracket_negation_is_rewritten_for_restic() {
-    // globset reads `[!a]`; restic (Go filepath.Match) only knows `[^a]`.
     assert_eq!(
         backup_excludes(Path::new("/data"), &strings(&["[!a]*.log", "/x/[!0-9]", r"\[!a]", "[a[!]"])).unwrap(),
         strings(&["/data/**/[^a]*.log", "/data/x/[^0-9]", r"/data/**/\[!a]", "/data/**/[a[!]"])
@@ -106,7 +102,6 @@ fn glob_escape_escapes_every_metacharacter() {
 
 #[test]
 fn json_lines_are_classified() {
-    // Recorded from restic 0.19.1 (paths shortened).
     let status = r#"{"message_type":"status","percent_done":0.9999997777778271,"total_files":4,"files_done":2,"total_bytes":9000002,"bytes_done":9000000,"error_count":1}"#;
     let error = r#"{"message_type":"error","error":{"message":"open /src/u: permission denied"},"during":"archival","item":"/src/u"}"#;
     let exit = r#"{"message_type":"exit_error","code":3,"message":"Warning: at least one source file could not be read"}"#;
@@ -137,7 +132,7 @@ fn backup_summary_deserializes_from_a_recorded_line() {
 
 #[test]
 fn removed_files_come_from_the_parent_summary() {
-    use crate::services::restic::json::{Snapshot, files_removed};
+    use crate::domain::files::restic::json::{Snapshot, files_removed};
     let listing: Vec<Snapshot> = serde_json::from_value(serde_json::json!([
         {"id": "p", "paths": ["/src"], "summary": {"total_files_processed": 3, "files_new": 3}},
         {"id": "c", "paths": ["/src"], "parent": "p"},
@@ -168,27 +163,13 @@ fn a_local_channel_opens_the_dashboard_rest_repository() {
     assert!(repo.is_append_only());
 }
 
-#[test]
-fn local_storage_password_matches_the_dashboard_vector() {
-    use crate::services::restic::password::local_storage_password;
-    // Same vector as src/lib/local-storage/credential.ts in the dashboard.
-    assert_eq!(
-        local_storage_password("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=").unwrap(),
-        "8abfb788701b8c502658154746af6af768ea08f579381ad73b0f1e7dd43caea2"
-    );
-}
-
-// ---------- integration: restic + rclone on PATH ----------
-
 use crate::domain::files::platform::is_root;
-use crate::services::restic::backup::snapshot;
-use crate::services::restic::command::ResticRepo;
-use crate::services::restic::restore::restore;
+use crate::domain::files::restic::backup::snapshot;
+use crate::domain::files::restic::repo::ResticRepo;
+use crate::domain::files::restic::restore::restore;
 use std::fs;
 use tempfile::TempDir;
 
-/// A repository on an rclone `alias` remote pointing at a temp dir (test-only:
-/// production channels always go through `rclone_target`).
 fn local_repo(dir: &Path, generated_id: &str) -> ResticRepo {
     fs::create_dir_all(dir).unwrap();
     let config = format!("[pb]\ntype = alias\nremote = {}\n", dir.display());
@@ -204,7 +185,6 @@ fn tree(root: &Path) {
     fs::write(root.join("app.log"), "log").unwrap();
 }
 
-/// `relative/path=content` for every regular file, sorted.
 fn files(root: &Path) -> Vec<String> {
     let mut out: Vec<String> = walkdir::WalkDir::new(root)
         .min_depth(1)
@@ -242,8 +222,6 @@ async fn first_snapshot_initializes_the_repository_and_the_second_reuses_its_par
     assert_eq!(second.files_removed, Some(0));
 
     let tagged = repo.run(["snapshots", "--json", "--tag", "bs:bs-2"], &logger).await.unwrap();
-    // The tag selects only the second snapshot, and its `parent` is the first
-    // (a plain `contains(first)` check would match that `parent` field).
     let listed: serde_json::Value = serde_json::from_str(tagged.stdout.trim()).unwrap();
     let listed = listed.as_array().unwrap();
     assert_eq!(listed.len(), 1, "{}", tagged.stdout);
@@ -291,7 +269,7 @@ async fn restore_is_a_mirror_that_keeps_excluded_paths() {
 #[tokio::test]
 async fn unreadable_file_fails_the_snapshot_and_forgets_it() {
     if is_root() {
-        return; // root reads a 000 file anyway
+        return;
     }
     use std::os::unix::fs::PermissionsExt;
     let base = TempDir::new().unwrap();
@@ -313,7 +291,6 @@ async fn unreadable_file_fails_the_snapshot_and_forgets_it() {
 
 #[tokio::test]
 async fn unanchored_exclude_never_matches_directories_above_the_source() {
-    // Regression for spike S5: the source lives under a directory named like the pattern.
     let base = TempDir::new().unwrap();
     let src = base.path().join("tmp/src");
     fs::create_dir_all(src.join("tmp")).unwrap();
@@ -367,7 +344,7 @@ async fn an_unusable_cache_dir_runs_restic_without_cache() {
     let cfg = files_config(src.path(), &[]);
     let dir = base.path().join("repo");
     fs::create_dir_all(&dir).unwrap();
-    let blocker = tempfile::NamedTempFile::new().unwrap(); // a regular file: nothing can be created below it
+    let blocker = tempfile::NamedTempFile::new().unwrap();
     let config = format!("[pb]\ntype = alias\nremote = {}\n", dir.display());
     let repo = ResticRepo::new(&config, "pb", "", "backups", &cfg.generated_id, "test-password", blocker.path().join("cache")).unwrap();
     snapshot(&repo, &cfg, "bs-1", &JobLogger::new()).await.unwrap();

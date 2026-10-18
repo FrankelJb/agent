@@ -1,20 +1,15 @@
-use super::command::{ResticRepo, is_snapshot_id, short};
 use super::excludes::{glob_escape, restore_excludes};
 use super::json::Snapshot;
+use super::repo::{ResticRepo, is_snapshot_id, short};
 use crate::domain::files::matcher::{exclude_patterns, one_file_system};
 use crate::domain::files::platform::dev;
 use crate::domain::files::restore::ensure_restorable;
-use crate::services::api::models::agent::status::DatabaseStorage;
 use crate::services::backup::logger::JobLogger;
-use crate::services::config::{DatabaseConfig, DbType};
-use crate::utils::edge_key::EdgeKey;
-use crate::utils::locks::{DbOpLock, FileLock};
+use crate::services::config::DatabaseConfig;
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 use walkdir::WalkDir;
 
-/// Mirror restore of `snapshot_id` into `cfg.path`: files created since are
-/// deleted, paths matching the current exclude patterns are kept (spike S1).
 pub async fn restore(
     repo: &ResticRepo,
     cfg: &DatabaseConfig,
@@ -32,7 +27,6 @@ pub async fn restore(
     }
     let snapshots: Vec<Snapshot> = serde_json::from_str(listed.stdout.trim())
         .context("unexpected `restic snapshots` output")?;
-    // The original path inside the snapshot; the mount point may have moved since.
     let Some(original) = snapshots.first().and_then(|s| s.paths.first()) else {
         bail!("snapshot {} not found in {}", short(snapshot_id), repo.repository());
     };
@@ -78,8 +72,6 @@ pub async fn restore(
     Ok(())
 }
 
-/// Directories under `root` on another device. With `one_file_system` backup
-/// never entered them, so the mirror restore must not delete their content.
 fn mount_points(root: &Path) -> Vec<String> {
     let Ok(meta) = std::fs::metadata(root) else { return Vec::new() };
     let root_dev = dev(&meta);
@@ -98,27 +90,4 @@ fn mount_points(root: &Path) -> Vec<String> {
         }
     }
     out
-}
-
-/// Snapshot restore job: the source's FileLock is held for the whole restore.
-pub async fn run(
-    edge_key: &EdgeKey,
-    cfg: &DatabaseConfig,
-    snapshot_id: &str,
-    storage: &DatabaseStorage,
-    logger: &JobLogger,
-) -> Result<()> {
-    if !matches!(cfg.db_type, DbType::Files) {
-        bail!("snapshot restore needs a files source, got {}", cfg.db_type.as_str());
-    }
-    FileLock::acquire(&cfg.generated_id, DbOpLock::Restore.as_str())
-        .await
-        .context("another backup or restore of this source is running")?;
-    let result = async {
-        let repo = ResticRepo::open(storage, &cfg.generated_id, edge_key)?;
-        restore(&repo, cfg, snapshot_id, logger).await
-    }
-    .await;
-    FileLock::release(&cfg.generated_id).await?;
-    result
 }

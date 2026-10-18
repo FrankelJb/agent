@@ -1,6 +1,6 @@
 use super::excludes::sync_excludes;
 use super::stats::{SyncStats, parse_log};
-use crate::domain::files::matcher::{exclude_patterns, one_file_system};
+use crate::domain::files::matcher::{exclude_patterns, one_file_system, source_root};
 use crate::services::backup::logger::JobLogger;
 use crate::services::config::DatabaseConfig;
 use crate::services::storage::providers::rclone::helpers::{remote_target, write_config};
@@ -9,22 +9,12 @@ use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
 
-/// `<remote>:<base>/<folder>/sync/<generated_id>/current`
 pub fn replica_target(remote_name: &str, base_path: &str, folder: &str, generated_id: &str) -> String {
     remote_target(remote_name, base_path, &format!("{folder}/sync/{generated_id}/current"))
 }
 
-/// Mirrors `cfg.path` onto `dest` (`<remote>:<path>`); files matching an exclude are removed
-/// from the replica too (`--delete-excluded`). rclone skips its deletions when an error
-/// happens before the delete phase ("not deleting files as there were IO errors");
-/// an error during the delete phase can leave the replica partially updated.
-/// An empty source is refused so an unmounted volume cannot wipe the replica.
 pub async fn sync_dir(config_text: &str, dest: &str, cfg: &DatabaseConfig, logger: &JobLogger) -> Result<SyncStats> {
-    let root = std::fs::canonicalize(&cfg.path)
-        .with_context(|| format!("cannot read source directory {}", cfg.path))?;
-    if !root.is_dir() {
-        bail!("source path {} is not a directory", root.display());
-    }
+    let root = source_root(cfg)?;
     if std::fs::read_dir(&root)
         .with_context(|| format!("cannot read source directory {}", root.display()))?
         .next()
@@ -45,7 +35,6 @@ pub async fn sync_dir(config_text: &str, dest: &str, cfg: &DatabaseConfig, logge
         .arg(dest)
         .args([
             "--links", "--delete-excluded", "--use-json-log", "--stats", "1h", "--stats-log-level", "NOTICE", "--retries", "1",
-            // An unreachable endpoint fails in ~1–2 min instead of blocking the next runs.
             "--contimeout", "30s", "--low-level-retries", "3",
         ]);
     if one_file_system(cfg) {
@@ -80,7 +69,6 @@ pub async fn sync_dir(config_text: &str, dest: &str, cfg: &DatabaseConfig, logge
         bail!("rclone sync failed ({}): {reason}; the replica may be partially updated", out.status);
     }
     let mut stats = log.stats.unwrap_or_default();
-    // Measured on the replica itself, so it is what is stored, not inferred from the source.
     stats.replica_bytes = match remote_size(config.path(), dest).await {
         Ok(bytes) => Some(bytes),
         Err(e) => {
@@ -96,7 +84,6 @@ pub async fn sync_dir(config_text: &str, dest: &str, cfg: &DatabaseConfig, logge
     Ok(stats)
 }
 
-/// Bytes stored under `target` (`<remote>:<path>`), per `rclone size`.
 async fn remote_size(config: &Path, target: &str) -> Result<u64> {
     let out = Command::new("rclone")
         .args(["--contimeout", "30s", "--low-level-retries", "3", "--config"])
