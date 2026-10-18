@@ -5,7 +5,7 @@ use tracing::{error, info};
 pub async fn run(cfg: DatabaseConfig) -> Result<bool> {
     info!("Running ping for MSSQL database {}", cfg.name);
 
-    match super::connection::build_client(&cfg).await {
+    match super::connection::build_client(&cfg, None).await {
         Ok(mut client) => match client.simple_query("SELECT 1").await {
             Ok(_) => {
                 info!("MSSQL ping succeeded for {}", cfg.name);

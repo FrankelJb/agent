@@ -34,6 +34,14 @@ pub async fn run(
         let pg_dump = select_pg_path(&version).join("pg_dump");
         logger.log("debug", format!("Using pg_dump at {:?}", pg_dump));
 
+        let (excludes, invalid) = exclude_args(&cfg);
+        for key in invalid {
+            logger.log("warn", format!("Ignoring options.{} for {}: expected a list of patterns", key, cfg.name));
+        }
+        if !excludes.is_empty() {
+            logger.log("info", format!("Excluding from dump of {}: {}", cfg.name, excludes.join(" ")));
+        }
+
         match format {
             PostgresDumpFormat::Fc => {
                 logger.log("info", format!("Running FC backup for {}", cfg.name));
@@ -46,6 +54,7 @@ pub async fn run(
                     .arg("--port").arg(cfg.port.to_string())
                     .arg("--username").arg(&cfg.username)
                     .arg("--dbname").arg(&cfg.database)
+                    .args(&excludes)
                     .arg("-Fc")
                     .arg("-f").arg(&file_path)
                     .arg("-v")
@@ -97,6 +106,7 @@ pub async fn run(
                     .arg("--port").arg(cfg.port.to_string())
                     .arg("--username").arg(&cfg.username)
                     .arg("--dbname").arg(&cfg.database)
+                    .args(&excludes)
                     .arg("-Fd")
                     .arg("-j").arg("4")
                     .arg("-f").arg(&dump_dir)
@@ -150,4 +160,24 @@ pub async fn run(
         }
     })
     .await?
+}
+
+pub(crate) fn exclude_args(cfg: &DatabaseConfig) -> (Vec<String>, Vec<&'static str>) {
+    let mut args = Vec::new();
+    let mut invalid = Vec::new();
+    for (key, flag) in [("exclude_tables", "--exclude-table"), ("exclude_schemas", "--exclude-schema")] {
+        match cfg.options.get(key).map(|v| v.as_array()) {
+            None => {}
+            Some(Some(items)) => args.extend(
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(|p| format!("{flag}={p}")),
+            ),
+            Some(None) => invalid.push(key),
+        }
+    }
+    (args, invalid)
 }
