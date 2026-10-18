@@ -1,3 +1,4 @@
+use crate::utils::text::human_size;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -61,4 +62,24 @@ pub fn parse_log(stderr: &str) -> SyncLog {
         log.errors.reverse();
     }
     log
+}
+
+pub fn progress(line: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let stats = value.get("stats")?;
+    let n = |key: &str| stats[key].as_u64().unwrap_or(0);
+    let (bytes, total) = (n("bytes"), n("totalBytes"));
+    let percent = if total > 0 { bytes * 100 / total } else { 100 };
+    let eta = stats["eta"].as_u64().map(|s| format!(", ETA {s}s")).unwrap_or_default();
+    Some(format!(
+        "rclone sync: {} / {} ({percent}%), {}/{} transferred, {}/{} checked, {} deleted, {}/s{eta}",
+        human_size(bytes),
+        human_size(total),
+        n("transfers"),
+        n("totalTransfers"),
+        n("checks"),
+        n("totalChecks"),
+        n("deletes"),
+        human_size(stats["speed"].as_f64().unwrap_or(0.0) as u64),
+    ))
 }

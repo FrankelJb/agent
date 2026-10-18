@@ -1,5 +1,5 @@
 use crate::domain::files::sync::excludes::sync_excludes;
-use crate::domain::files::sync::stats::{SyncStats, parse_log};
+use crate::domain::files::sync::stats::{SyncStats, parse_log, progress};
 
 fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| s.to_string()).collect()
@@ -69,6 +69,19 @@ fn parse_log_reads_a_successful_run() {
     let log = parse_log(stderr);
     assert_eq!(log.stats, Some(SyncStats { bytes: 2, transfers: 1, deletes: 1, ..Default::default() }));
     assert!(log.errors.is_empty());
+}
+
+#[test]
+fn progress_formats_periodic_stats_and_ignores_other_lines() {
+    let line = r#"{"level":"notice","msg":"stats","stats":{"bytes":536870912,"totalBytes":1073741824,"transfers":1200,"totalTransfers":2924,"checks":3,"totalChecks":10,"deletes":0,"speed":89128960.5,"eta":6}}"#;
+    assert_eq!(
+        progress(line).unwrap(),
+        "rclone sync: 512 MB / 1024 MB (50%), 1200/2924 transferred, 3/10 checked, 0 deleted, 85 MB/s, ETA 6s"
+    );
+    let idle = r#"{"level":"notice","stats":{"bytes":0,"totalBytes":0,"speed":0,"eta":null}}"#;
+    assert_eq!(progress(idle).unwrap(), "rclone sync: 0 B / 0 B (100%), 0/0 transferred, 0/0 checked, 0 deleted, 0 B/s");
+    assert!(progress(r#"{"level":"error","msg":"boom"}"#).is_none());
+    assert!(progress("plain text").is_none());
 }
 
 #[test]

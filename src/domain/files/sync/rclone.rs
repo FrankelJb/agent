@@ -1,5 +1,5 @@
 use super::excludes::sync_excludes;
-use super::stats::{SyncStats, parse_log};
+use super::stats::{SyncStats, parse_log, progress};
 use crate::domain::files::matcher::{exclude_patterns, one_file_system, source_root};
 use crate::services::backup::logger::JobLogger;
 use crate::services::config::DatabaseConfig;
@@ -7,6 +7,7 @@ use crate::services::storage::providers::rclone::helpers::{remote_target, write_
 use anyhow::{Context, Result, anyhow, bail};
 use std::path::Path;
 use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 pub fn replica_target(remote_name: &str, base_path: &str, folder: &str, generated_id: &str) -> String {
@@ -34,7 +35,7 @@ pub async fn sync_dir(config_text: &str, dest: &str, cfg: &DatabaseConfig, logge
         .arg(&root)
         .arg(dest)
         .args([
-            "--links", "--delete-excluded", "--use-json-log", "--stats", "1h", "--stats-log-level", "NOTICE", "--retries", "1",
+            "--links", "--delete-excluded", "--use-json-log", "--stats-log-level", "NOTICE", "--retries", "1",
             "--contimeout", "30s", "--low-level-retries", "3",
         ]);
     if one_file_system(cfg) {
@@ -44,29 +45,45 @@ pub async fn sync_dir(config_text: &str, dest: &str, cfg: &DatabaseConfig, logge
         cmd.arg("--exclude").arg(pattern);
     }
 
+    let debug = tracing::enabled!(tracing::Level::DEBUG);
+    cmd.args(["--stats", if debug { "5s" } else { "1h" }]);
+
     logger.log("info", format!("Syncing {} to {dest}", root.display()));
-    let out = cmd
+    let mut child = cmd
         .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .output()
-        .await
+        .spawn()
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => anyhow!("rclone binary not found"),
             _ => anyhow!(e).context("failed to start rclone"),
         })?;
+    let mut lines = BufReader::new(child.stderr.take().context("rclone stderr unavailable")?).lines();
+    let mut stderr = String::new();
+    while let Some(line) = lines.next_line().await.context("failed to read rclone output")? {
+        if debug {
+            if let Some(progress) = progress(&line) {
+                tracing::debug!("{progress}");
+            }
+        }
+        stderr.push_str(&line);
+        stderr.push('\n');
+    }
+    let status = child.wait().await.context("failed to wait for rclone")?;
 
-    let log = parse_log(&String::from_utf8_lossy(&out.stderr));
+    let log = parse_log(&stderr);
     for error in &log.errors {
         logger.log("warn", format!("rclone: {error}"));
     }
-    if !out.status.success() {
+    if !status.success() {
         let reason = log
             .stats
             .as_ref()
             .and_then(|s| s.last_error.clone())
             .or_else(|| log.errors.last().cloned())
             .unwrap_or_else(|| "no error message".to_string());
-        bail!("rclone sync failed ({}): {reason}; the replica may be partially updated", out.status);
+        bail!("rclone sync failed ({status}): {reason}; the replica may be partially updated");
     }
     let mut stats = log.stats.unwrap_or_default();
     stats.replica_bytes = match remote_size(config.path(), dest).await {

@@ -2,6 +2,7 @@ use super::service::RestoreService;
 
 use crate::services::backup::logger::JobLogger;
 use crate::utils::retry::{RetryPolicy, retry};
+use crate::utils::text::human_size;
 use anyhow::Result;
 use futures::StreamExt;
 use reqwest::{Client, Url};
@@ -9,16 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
-
-fn human_size(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 {
-        format!("{} MB", bytes / 1024 / 1024)
-    } else if bytes >= 1024 {
-        format!("{} KB", bytes / 1024)
-    } else {
-        format!("{bytes} B")
-    }
-}
 
 impl RestoreService {
     pub async fn download_backup(

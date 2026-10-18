@@ -53,3 +53,13 @@ fn convert_dow_part(part: &str) -> String {
         None => converted,
     }
 }
+
+pub fn human_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{} MB", bytes / 1024 / 1024)
+    } else if bytes >= 1024 {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{bytes} B")
+    }
+}
