@@ -3,14 +3,22 @@ use crate::services::api::models::agent::status::DatabaseStorage;
 use crate::services::backup::models::{BackupResult, UploadResult};
 use crate::services::storage::StorageProvider;
 use crate::utils::common::BackupMethod;
+use crate::utils::edge_key::derive_key;
 use crate::utils::file::{full_file_name, full_file_path};
 use crate::utils::stream::build_stream;
 use crate::utils::tus::upload_to_tus_stream_with_headers;
+use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue};
 use std::sync::Arc;
 use tokio::fs;
 use tracing::error;
+
+pub const LOCAL_STORAGE_USER: &str = "portabase";
+
+pub fn local_storage_password(master_key_b64: &str) -> Result<String> {
+    Ok(hex::encode(derive_key(master_key_b64, b"portabase/local-storage/v1")?))
+}
 
 pub struct LocalProvider;
 

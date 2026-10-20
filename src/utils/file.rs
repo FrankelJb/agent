@@ -46,14 +46,15 @@ pub fn full_file_name(encrypt: bool) -> String {
     }
 }
 
-pub fn full_file_path(file_name: &String, folder_name: Option<&str>) -> String {
-    let folder_name = folder_name
-        .map(str::trim)
-        .map(|folder_name| folder_name.trim_matches(char::from(47)))
+pub fn folder_or_default(folder_name: Option<&str>) -> &str {
+    folder_name
+        .map(|folder_name| folder_name.trim().trim_matches('/'))
         .filter(|folder_name| !folder_name.is_empty())
-        .unwrap_or("backups");
+        .unwrap_or("backups")
+}
 
-    format!("{}/{}/{}", folder_name, chrono::Local::now().format("%Y-%m-%d"), file_name)
+pub fn full_file_path(file_name: &String, folder_name: Option<&str>) -> String {
+    format!("{}/{}/{}", folder_or_default(folder_name), chrono::Local::now().format("%Y-%m-%d"), file_name)
 }
 
 const CHUNK_SIZE: usize = 16 * 1024 * 1024;

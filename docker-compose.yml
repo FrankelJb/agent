@@ -16,6 +16,9 @@ services:
       - databases_sqlite-data:/sqlite-data/workspace/data
       - ./scripts/sqlite/test-db:/sqlite-data-2/workspace/data
     #      - /bigdisk:/scratch
+      - ./test-files/archive:/data/files-archive
+      - ./test-files/snapshot:/data/files-snapshot
+      - ./test-files/sync:/data/files-sync
     environment:
       APP_ENV: development
       LOG: debug
