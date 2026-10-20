@@ -8,6 +8,7 @@ use reqwest::{Client, Method, RequestBuilder};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::error;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -50,9 +51,13 @@ impl ApiClient {
 
     /// Sign every dashboard call with the key derived from the EDGE_KEY master key.
     pub fn with_agent_auth(mut self, agent_id: &str, master_key_b64: &str) -> Self {
-        let master_key = general_purpose::STANDARD
-            .decode(master_key_b64)
-            .expect("EDGE_KEY master key is not valid base64");
+        let master_key = match general_purpose::STANDARD.decode(master_key_b64) {
+            Ok(key) => key,
+            Err(_) => {
+                error!("Invalid EDGE_KEY: master key is not valid base64");
+                panic!("Cannot initialize AgentContext due to invalid EDGE_KEY");
+            }
+        };
         self.agent_key = Some(derive_agent_key(&master_key, agent_id));
         self
     }

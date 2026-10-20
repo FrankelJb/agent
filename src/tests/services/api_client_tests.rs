@@ -3,6 +3,7 @@ use crate::services::api::client::{derive_agent_key, sign_request};
 
 use base64::{Engine as _, engine::general_purpose};
 use reqwest::Method;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -37,6 +38,35 @@ fn request_signature_matches_the_dashboard_vector() {
         sign_request(&key, "POST", &path, "1760968800", "{\"name\":\"Base é\"}".as_bytes()),
         "d3e6911c9273e0224b8dbae72cabdd3720973f1866c651fb4c99e1ac03e73231"
     );
+}
+
+#[test]
+fn invalid_master_key_logs_an_error_before_panicking() {
+    #[derive(Clone, Default)]
+    struct Logs(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Logs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let logs = Logs::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+
+    let result = tracing::subscriber::with_default(subscriber, || {
+        std::panic::catch_unwind(|| ApiClient::new("http://dashboard").with_agent_auth(AGENT_ID, "not base64!"))
+    });
+
+    assert!(result.is_err(), "an invalid master key must stop the agent");
+    let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(output.contains("ERROR") && output.contains("Invalid EDGE_KEY"), "logs: {output}");
 }
 
 #[tokio::test]
