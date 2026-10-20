@@ -19,15 +19,12 @@ pub struct ApiClient {
     agent_key: Option<Vec<u8>>,
 }
 
-/// Per-agent signing key: HMAC-SHA256(master key, "portabase-agent-auth:v1:" + agent id).
 pub fn derive_agent_key(master_key: &[u8], agent_id: &str) -> Vec<u8> {
     let mut mac = HmacSha256::new_from_slice(master_key).expect("HMAC accepts any key length");
     mac.update(format!("portabase-agent-auth:v1:{agent_id}").as_bytes());
     mac.finalize().into_bytes().to_vec()
 }
 
-/// Lowercase hex HMAC-SHA256(agent key, METHOD \n PATH \n TIMESTAMP \n hex(sha256(body))).
-/// Must match the dashboard's `signAgentRequest` (src/utils/status-crypto.ts).
 pub fn sign_request(agent_key: &[u8], method: &str, path: &str, timestamp: &str, body: &[u8]) -> String {
     let body_hash = hex::encode(Sha256::digest(body));
     let mut mac = HmacSha256::new_from_slice(agent_key).expect("HMAC accepts any key length");
@@ -49,7 +46,6 @@ impl ApiClient {
         }
     }
 
-    /// Sign every dashboard call with the key derived from the EDGE_KEY master key.
     pub fn with_agent_auth(mut self, agent_id: &str, master_key_b64: &str) -> Self {
         let master_key = match general_purpose::STANDARD.decode(master_key_b64) {
             Ok(key) => key,
@@ -62,8 +58,6 @@ impl ApiClient {
         self
     }
 
-    /// Adds X-Agent-Timestamp / X-Agent-Signature, computed per call. The signed path is the
-    /// dashboard route ("/api" + path), independent of any prefix in the server URL.
     fn sign(&self, request: RequestBuilder, method: &Method, path: &str, body: &[u8]) -> RequestBuilder {
         let Some(agent_key) = &self.agent_key else {
             return request;

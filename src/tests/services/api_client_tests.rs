@@ -8,7 +8,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// Shared test vector, asserted identically by the dashboard (src/utils/status-crypto.ts).
 const AGENT_ID: &str = "11111111-1111-4111-8111-111111111111";
 
 fn vector_master_key() -> Vec<u8> {
