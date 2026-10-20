@@ -1,6 +1,9 @@
+use anyhow::Context;
 use base64::{Engine as _, engine::general_purpose};
+use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::Sha256;
 use thiserror::Error;
 
 #[derive(Debug, Deserialize)]
@@ -44,4 +47,22 @@ pub fn decode_edge_key(edge_key: &str) -> Result<EdgeKey, EdgeKeyError> {
     } else {
         Err(EdgeKeyError::InvalidKey)
     }
+}
+
+pub fn derive_key(master_key_b64: &str, info: &[u8]) -> anyhow::Result<[u8; 32]> {
+    let master_key = general_purpose::STANDARD
+        .decode(master_key_b64.trim())
+        .context("master key is not valid base64")?;
+    Ok(hkdf_sha256_32(&master_key, info))
+}
+
+pub fn hkdf_sha256_32(ikm: &[u8], info: &[u8]) -> [u8; 32] {
+    let mut extract = Hmac::<Sha256>::new_from_slice(&[]).expect("HMAC takes any key length");
+    extract.update(ikm);
+    let prk = extract.finalize().into_bytes();
+
+    let mut expand = Hmac::<Sha256>::new_from_slice(&prk).expect("HMAC takes any key length");
+    expand.update(info);
+    expand.update(&[1]);
+    expand.finalize().into_bytes().into()
 }

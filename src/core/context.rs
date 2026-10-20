@@ -37,7 +37,8 @@ impl Context {
         };
 
         let server_url = format!("{}/api", edge_key.server_url);
-        let api_client = ApiClient::new(server_url);
+        let api_client = ApiClient::new(server_url)
+            .with_agent_auth(&edge_key.agent_id, &edge_key.master_key_b64);
 
         Context {
             edge_key: edge_key,
