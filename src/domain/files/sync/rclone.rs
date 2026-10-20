@@ -64,7 +64,7 @@ pub async fn sync_dir(config_text: &str, dest: &str, cfg: &DatabaseConfig, logge
     while let Some(line) = lines.next_line().await.context("failed to read rclone output")? {
         if debug {
             if let Some(progress) = progress(&line) {
-                tracing::debug!("{progress}");
+                logger.log("debug", format!("progress: {progress}"));
             }
         }
         stderr.push_str(&line);
